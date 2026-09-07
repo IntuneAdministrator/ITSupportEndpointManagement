@@ -1,0 +1,726 @@
+<#
+_author_ = Sven Riebe <sven_riebe@Dell.com>
+_twitter_ = @SvenRiebe
+_version_ = 1.0.1
+_Dev_Status_ = Test
+Copyright ©2025 Dell Inc. or its subsidiaries. All Rights Reserved.
+
+No implied support and test in test environment/device before using in any production environment.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+    http://www.apache.org/licenses/LICENSE-2.0
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+#>
+
+<#Version Changes
+
+      1.0.0    inital version
+      1.0.1    update function set-BIOSSetting and write-DellRemediationEvent
+
+#>
+
+<#
+.Synopsis
+   This PowerShell is checking BIOS setting are compliant to IT requirements
+   IMPORTANT: WMI BIOS is supported only on devices which developt after 2018, older devices does not supported by this powershell
+   IMPORTANT: This script does not reboot the system to apply or query system.
+.DESCRIPTION
+   Powershell using WMI and read the existing BIOS settings and compare with IT required
+
+#>
+
+
+#########################################################################################################
+####                                    Function Section                                             ####
+#########################################################################################################
+function write-DellRemediationEvent
+    {
+        <#
+        .Synopsis
+        This function write Events to Microsoft Eventlog. Need adminrights for execution.
+
+        .Description
+        This function writes standardized information from Dell Detection and Remediation scripts to EventLog Application Logname Dell Source Remediation Scripts. This makes it possible to access the information historically later for monitoring or analysis.
+
+        Event ID 0 - 3 for Main Script (0 - Success / 1 - Error / 2 - Information / 3 - Warning )
+        Event ID 10 - 13 for feedback of functions (10 - Success / 11 - Error / 12 - Information / 13 - Warning )
+        Event ID 20 - 23 for Software Installation  (20 - Success / 21 - Error / 22 - Information / 23 - Warning )
+
+        .Parameter Logname
+        Value is the Name of the Eventlog it will be later under Application and Service Logs Default Dell
+
+        .Parameter Source
+        Value is the Resource and will be visible in the Event for filter options Default is RemediationScript
+
+        .Parameter EntryType
+        Value is the type of a Event like Error, Information, FailureAudit, SuccessAudit, Warning
+
+        .Parameter EventID
+        Value is a number for this event for filter options, the values are predefined for categories like MainScript, Function and Software Installation
+
+        .Parameter Message
+        Value is a message that will be visible in Event, it could be a string or JSON or XML but only one message for each event.
+
+        Changelog:
+            1.0.0   Initial Version
+            1.0.1   Delete Try and Catch for testing Logname/Ressource exit and change to allway add Logname/Ressource and if exist ignor error silten.
+                    Correct issue all logs are warning
+            1.0.2   change commannds to make function powershell 7 ready
+            1.1.0   updating issue with logsize and adding new LogName and Source
+            1.1.1   correct issue to size eventlog because sometime it change to existing value
+
+        .Example
+        # Write a Microsoft Event to Application and Service Logs for LogName Dell and Source RemediationScript with ID 2 for Information with the message body "Test message"
+        write-DellRemediationEvent -Logname Dell -Source RemediationScript -EntryType Information -EventID '2-InformationScript' -Message "Test message"
+
+        #>
+        param
+            (
+
+                [Parameter(mandatory=$false)][ValidateSet('Dell','DellRemediation')]$Logname,
+                [Parameter(mandatory=$false)][ValidateSet('RemediationScript','RemediationFunction','RemediationInstall','RemediationTranscript')]$Source,
+                [Parameter(mandatory=$false)][ValidateSet('Error', 'Information', 'FailureAudit', 'SuccessAudit', 'Warning')]$EntryType='Information',
+                [Parameter(mandatory=$true)][ValidateSet('0-SuccessScript','1-ErrorScript','2-InformationScript','3-WarningScript','10-SuccessFunction','11-ErrorFunction','12-InformationFunction','13-WarningFunction','20-SuccessInstall','21-ErrorInstall','22-InformationInstall','23-WarningInstall')][String]$EventID,
+                [Parameter(mandatory=$true)]$Message
+
+            )
+        #########################################################################################################
+        ####                                    Variable Section                                             ####
+        #########################################################################################################
+
+        # Log Parameters
+        [int64]$LogSize = 15420KB
+
+        #########################################################################################################
+        ####                                Function Program Section                                         ####
+        #########################################################################################################
+        # prepare the logname and ressource name
+        $checkSource = [System.Diagnostics.EventLog]::SourceExists($source)
+        if ($checkSource -ne $true)
+            {
+                try
+                    {
+                        [System.Diagnostics.EventLog]::CreateEventSource($source, $logName)
+                        Write-Verbose "Event source '$source' created for log '$logName'." -Verbose
+                    }
+                catch
+                    {
+                        Write-Verbose "Event source '$source' fail to create for log '$logName'." -Verbose
+                        return $false
+                    }
+
+            }
+        else
+            {
+                Write-Verbose "Event source '$source' already exists." -Verbose
+            }
+
+
+        # Change the size of the event log if it is not $LogSize
+        $EventLog = Get-WinEvent -ListLog $Logname
+        if ($EventLog.MaximumSizeInBytes -lt $LogSize)
+            {
+                try
+                    {
+                        $EventLog.MaximumSizeInBytes = $LogSize
+                        $EventLog.SaveChanges()
+                        Write-Verbose "Event log '$Logname' size changed to $LogSize." -Verbose
+                    }
+                catch
+                    {
+                        Write-Verbose "Event log '$Logname' failed to change size to $LogSize." -Verbose
+                        return $false
+                    }
+            }
+        else
+            {
+                Write-Verbose "Event log '$Logname' is already $LogSize." -Verbose
+            }
+
+        # modify EventID to number only
+        [int]$EventID = switch ($EventID)
+                    {
+                        '0-SuccessScript'             {0}
+                        '1-ErrorScript'               {1}
+                        '2-InformationScript'         {2}
+                        '3-WarningScript'             {3}
+                        '10-SuccessFunction'          {10}
+                        '11-ErrorFunction'            {11}
+                        '12-InformationFunction'      {12}
+                        '13-WarningFunction'          {13}
+                        '20-SuccessInstall'           {20}
+                        '21-ErrorInstall'             {21}
+                        '22-InformationInstall'       {22}
+                        '23-WarningInstall'           {23}
+                        Default {2}
+                    }
+
+        # Value validation if Entrytype match to EventID if not it change the Entrytype to the correct type
+
+        if ($EventID -eq 0 -or $EventID -eq 10 -or $EventID -eq 20)
+            {
+                $EntryType = 'SuccessAudit'
+            }
+        if (($EventID -eq 1) -or ($EventID -eq 11) -or ($EventID -eq 21))
+            {
+                $EntryType = 'Error'
+            }
+        if (($EventID -eq 2) -or ($EventID -eq 12) -or ($EventID -eq 22))
+            {
+                $EntryType = 'Information'
+            }
+        if (($EventID -eq 3) -or ($EventID -eq 13) -or ($EventID -eq 23))
+            {
+                $EntryType = 'Warning'
+            }
+
+        try
+            {
+                # Initialize Eventlog for reporting and Debugging
+                $evt=new-object System.Diagnostics.EventLog($logName)
+                $evt.Source=$source
+
+                #write event by .net
+                $evt.WriteEntry($Message,$EntryType,$EventID)
+                Write-Verbose "Eventlog is created successful" -Verbose
+                Return $true
+            }
+        catch
+            {
+                Write-Verbose "Eventlog could not created" -Verbose
+                Return $false
+            }
+    }
+
+function set-BIOSSetting
+    {
+
+        <#
+        .Synopsis
+        This function changing the Dell Client BIOS Settings by CIM
+
+        .Description
+        This function allows you agentless to set BIOS Pasword or to change BIOS Settings
+
+        .Parameter SettingName
+        Value is the name of the BIOS setting
+
+        .Parameter SettingValue
+        This is the value is the BIOS setting value, e.g. enabled or disabled or if you set/Change the new Password
+
+        .Parameter BIOSPW
+        This is the value is the existing BIOS Password set on the device. It will only needed if a BIOS Password is set on the device.
+
+
+        Changelog:
+            1.0.0 Initial Version
+            1.0.1 add return for setting returncode to the mainscript
+            1.0.2 switch from write-host to Write-Information, write-verbose and write-error
+
+
+        .Example
+        This example will set the Chassis Intrusion detection to SilentEnable, if the Device has no BIOS Admin Password.
+
+        set-BIOSSetting -SettingName ChasIntrusion -SettingValue SilentEnable
+
+        .Example
+        This example will set the Chassis Intrusion detection to SilentEnable, if the Device has BIOS Admin Password.
+
+        set-BIOSSetting -SettingName ChasIntrusion -SettingValue SilentEnable -BIOSPW <Your BIOS Admin PWD>
+
+        .Example
+        This example will set a new BIOS Admin Password for the first time
+
+        set-BIOSSetting -SettingName Admin -SettingValue <Your BIOS Admin PWD>
+
+        .Example
+        This example will change BIOS Admin Password
+
+        set-BIOSSetting -SettingName Admin -SettingValue <Your NEW BIOS Admin PWD> -BIOSPW <Your OLD BIOS Admin PWD>
+
+        .Example
+        This example will Clear BIOS Admin Password
+
+        set-BIOSSetting -SettingName Admin -SettingValue ClearPWD -BIOSPW <Your OLD BIOS Admin PWD>
+
+        #>
+
+        param
+            (
+
+                [Parameter(mandatory=$true)] [String]$SettingName,
+                [Parameter(mandatory=$true)] [String]$SettingValue,
+                [Parameter(mandatory=$false)] [String]$BIOSPW
+
+            )
+
+
+        #########################################################################################################
+        ####                                    Program Section                                              ####
+        #########################################################################################################
+
+        # connect BIOS Interface
+        try
+            {
+                # get BIOS WMI Interface
+                $BIOSInterface = Get-CimInstance -Namespace root\dcim\sysman\biosattributes -Class BIOSAttributeInterface -ErrorAction Stop
+                $SecurityInterface = Get-CimInstance -Namespace root\dcim\sysman\wmisecurity -Class SecurityInterface -ErrorAction Stop
+                Write-Information "BIOS Interface connected" -InformationAction Continue
+            }
+        catch
+            {
+                Write-Error "Error : BIOS interface access denied or unreachable"
+                Write-Information "Status : false" -InformationAction Continue
+                Return $false
+            }
+
+
+        # Check if BIOS Setting need BIOS Admin PWD
+        try
+            {
+                # Check BIOS AttributName AdminPW is set
+                $BIOSAdminPW = Get-CimInstance -Namespace root/dcim/sysman/wmisecurity -ClassName PasswordObject -Filter "NameId='Admin'" | Select-Object -ExpandProperty IsPasswordSet
+
+                if ($BIOSAdminPW -match "1")
+                    {
+                        Write-Information "BIOS Admin PW is set on this Device" -InformationAction Continue
+
+                        If ($null -eq $BIOSPW)
+                            {
+                                Write-Information "Message : required parameter BIOSPW is empty" -InformationAction Continue
+                                Return $false, "3"
+                                Return $false
+                            }
+
+                        #Get encoder for encoding password
+                        $encoder = New-Object System.Text.UTF8Encoding
+
+                        #encode the password
+                        $AdminBytes = $encoder.GetBytes($BIOSPW)
+
+                        If (($SettingName -ne "Admin") -and ($SettingName -ne "System"))
+                            {
+                                ######################################
+                                ####  BIOS Setting with Admin PWD ####
+                                ######################################
+
+                                try
+                                    {
+                                        # Argument
+                                        $argumentsWithPWD = @{
+                                                                AttributeName=$SettingName;
+                                                                AttributeValue=$SettingValue;
+                                                                SecType=1;
+                                                                SecHndCount=$AdminBytes.Length;
+                                                                SecHandle=$AdminBytes;
+                                                            }
+
+                                        # Set a BIOS Attribute
+                                        Write-Information "Set Bios" -InformationAction Continue
+                                        $SetResult = Invoke-CimMethod -InputObject $BIOSInterface -MethodName SetAttribute -Arguments $argumentsWithPWD -ErrorAction Stop
+
+                                        If ($SetResult.Status -eq 0)
+                                            {
+                                                Write-Information "Message : BIOS setting success" -InformationAction Continue
+                                                return $true
+                                            }
+                                        else
+                                            {
+                                                switch ( $SetResult.Status )
+                                                    {
+                                                        0 { $result = 'Success' }
+                                                        1 { $result = 'Failed' }
+                                                        2 { $result = 'Invalid Parameter' }
+                                                        3 { $result = 'Access Denied'  }
+                                                        4 { $result = 'Not Supported' }
+                                                        5 { $result = 'Memory Error'  }
+                                                        6 { $result = 'Protocol Error' }
+                                                        default { $result ='Unknown' }
+                                                    }
+                                                Write-Information "Message : BIOS setting $result" -InformationAction Continue
+                                                return $false, $SetResult.Status
+                                            }
+                                    }
+                                catch
+                                    {
+                                        $errMsg = $_.Exception.Message
+                                        Write-Information $errMsg -InformationAction Continue
+                                        If ($SetResult.Status -eq 0)
+                                            {
+                                                Write-Information "Message : BIOS setting success" -InformationAction Continue
+                                                return $true
+                                            }
+                                        else
+                                            {
+                                                        switch ( $SetResult.Status )
+                                                            {
+                                                                0 { $result = 'Success' }
+                                                                1 { $result = 'Failed' }
+                                                                2 { $result = 'Invalid Parameter' }
+                                                                3 { $result = 'Access Denied'  }
+                                                                4 { $result = 'Not Supported' }
+                                                                5 { $result = 'Memory Error'  }
+                                                                6 { $result = 'Protocol Error' }
+                                                                default { $result ='Unknown' }
+                                                            }
+                                                        Write-Information "Message : BIOS Password setting $result" -InformationAction Continue
+                                                        return $false, $SetResult.Status
+                                                        Return $false
+                                            }
+                                    }
+                            }
+                        else
+                            {
+                                ################################################
+                                ####  BIOS Change/Delete Admin or Sytem PWD ####
+                                ################################################
+                                try
+                                    {
+                                        If($SettingValue -eq "ClearPWD")
+                                            {
+                                                Write-Information "Admin PWD clear" -InformationAction Continue
+                                                # Argument
+                                                $argumentsWithPWD = @{
+                                                                        NameId=$SettingName;
+                                                                        NewPassword="";
+                                                                        OldPassword=$BIOSPW;
+                                                                        SecType=1;
+                                                                        SecHndCount=$AdminBytes.Length;
+                                                                        SecHandle=$AdminBytes;
+                                                                    }
+                                            }
+                                        else
+                                            {
+                                                Write-Information "Admin PWD change" -InformationAction Continue
+                                                # Argument
+                                                $argumentsWithPWD = @{
+                                                                        NameId=$SettingName;
+                                                                        NewPassword=$SettingValue;
+                                                                        OldPassword=$BIOSPW;
+                                                                        SecType=1;
+                                                                        SecHndCount=$AdminBytes.Length;
+                                                                        SecHandle=$AdminBytes;
+                                                                    }
+                                            }
+
+
+                                        # Set a BIOS Attribute
+                                        $SetResult = Invoke-CimMethod -InputObject $SecurityInterface -MethodName SetnewPassword -Arguments $argumentsWithPWD #-ErrorAction Stop
+
+                                        If ($SetResult.Status -eq 0)
+                                            {
+                                                Write-Information "Message : BIOS Password setting success" -InformationAction Continue
+                                                return $true
+                                            }
+                                        else
+                                            {
+                                                switch ( $SetResult.Status )
+                                                    {
+                                                        0 { $result = 'Success' }
+                                                        1 { $result = 'Failed' }
+                                                        2 { $result = 'Invalid Parameter' }
+                                                        3 { $result = 'Access Denied'  }
+                                                        4 { $result = 'Not Supported' }
+                                                        5 { $result = 'Memory Error'  }
+                                                        6 { $result = 'Protocol Error' }
+                                                        default { $result ='Unknown' }
+                                                    }
+                                                Write-Information "Message : BIOS Password setting $result" -InformationAction Continue
+                                                return $false, $SetResult.Status
+                                            }
+                                    }
+                                catch
+                                    {
+                                        $errMsg = $_.Exception.Message
+                                        Write-Information $errMsg -InformationAction Continue
+                                        If ($SetResult.Status -eq 0)
+                                            {
+                                                Write-Information "Message : BIOS Password setting success" -InformationAction Continue
+                                                return $true
+                                            }
+                                        else
+                                            {
+                                                switch ( $SetResult.Status )
+                                                    {
+                                                        0 { $result = 'Success' }
+                                                        1 { $result = 'Failed' }
+                                                        2 { $result = 'Invalid Parameter' }
+                                                        3 { $result = 'Access Denied'  }
+                                                        4 { $result = 'Not Supported' }
+                                                        5 { $result = 'Memory Error'  }
+                                                        6 { $result = 'Protocol Error' }
+                                                        default { $result ='Unknown' }
+                                                    }
+                                                Write-Information "Message : BIOS Password setting $result" -InformationAction Continue
+                                                return $false, $SetResult.Status
+                                                Return $false
+                                            }
+                                    }
+                            }
+                    }
+                Else
+                    {
+                        Write-Information "No BIOS Admin PW is set on this Device" -InformationAction Continue
+
+                        If (($SettingName -ne "Admin") -and ($SettingName -ne "System"))
+                            {
+                                #########################################
+                                ####  BIOS Setting without Admin PWD ####
+                                #########################################
+                                try
+                                    {
+                                        # Argument
+                                        $argumentsNoPWD = @{
+                                                                AttributeName=$SettingName;
+                                                                AttributeValue=$SettingValue;
+                                                                SecType=0;
+                                                                SecHndCount=0;
+                                                                SecHandle=@()
+                                                            }
+
+                                        Write-Information "Set Bios Settings" -InformationAction Continue
+                                        # Set a BIOS Attribute ChasIntrusion to EnabledSilent (BIOS password is not set)
+                                        $SetResult = Invoke-CimMethod -InputObject $BIOSInterface -MethodName SetAttribute -Arguments $argumentsNoPWD -ErrorAction Stop
+
+                                        If ($SetResult.Status -eq 0)
+                                            {
+                                                Write-Information "Message : BIOS setting success" -InformationAction Continue
+                                                return $true
+                                            }
+                                        else
+                                            {
+                                                switch ( $SetResult.Status )
+                                                    {
+                                                        0 { $result = 'Success' }
+                                                        1 { $result = 'Failed' }
+                                                        2 { $result = 'Invalid Parameter' }
+                                                        3 { $result = 'Access Denied'  }
+                                                        4 { $result = 'Not Supported' }
+                                                        5 { $result = 'Memory Error'  }
+                                                        6 { $result = 'Protocol Error' }
+                                                        default { $result ='Unknown' }
+                                                    }
+                                                Write-Information "Message : BIOS setting $result" -InformationAction Continue
+                                                return $false, $SetResult.Status
+                                            }
+                                    }
+                                catch
+                                    {
+                                        $errMsg = $_.Exception.Message
+                                        Write-Information $errMsg -InformationAction Continue
+                                        Write-Information "Message : BIOS setting failed" -InformationAction Continue
+                                        return $false, $SetResult.Status
+                                        Return $false
+                                    }
+
+
+                            }
+                        else
+                            {
+                                ######################################
+                                ####  BIOS Set Admin or Sytem PWD ####
+                                ######################################
+                                try
+                                    {
+
+                                        # Argument
+                                        $argumentsNoPWD = @{
+                                                                NameId=$SettingName;
+                                                                NewPassword=$SettingValue;
+                                                                OldPassword="";
+                                                                SecType=0;
+                                                                SecHndCount=0;
+                                                                SecHandle=@();
+                                                            }
+
+                                        Write-Information "Set Password" -InformationAction Continue
+
+                                        # Set a BIOS Passwords
+                                        $SetResult = Invoke-CimMethod -InputObject $SecurityInterface -MethodName SetnewPassword -Arguments $argumentsNoPWD -ErrorAction Stop
+
+                                        If ($SetResult.Status -eq 0)
+                                            {
+                                                Write-Information "Message : BIOS Password setting success" -InformationAction Continue
+                                                return $true
+                                            }
+                                        else
+                                            {
+                                                switch ( $SetResult.Status )
+                                                    {
+                                                        0 { $result = 'Success' }
+                                                        1 { $result = 'Failed' }
+                                                        2 { $result = 'Invalid Parameter' }
+                                                        3 { $result = 'Access Denied'  }
+                                                        4 { $result = 'Not Supported' }
+                                                        5 { $result = 'Memory Error'  }
+                                                        6 { $result = 'Protocol Error' }
+                                                        default { $result ='Unknown' }
+                                                    }
+                                                Write-Information "Message : BIOS setting $result" -InformationAction Continue
+                                                return $false, $SetResult.Status
+                                            }
+                                    }
+                                catch
+                                    {
+                                        $errMsg = $_.Exception.Message
+                                        Write-Information $errMsg -InformationAction Continue
+                                        Write-Information "Message : BIOS setting failed" -InformationAction Continue
+                                        return $false, $SetResult.Status
+                                        Return $false
+                                    }
+                            }
+                    }
+            }
+        catch
+            {
+                $errMsg = $_.Exception.Message
+                Write-Information $errMsg -InformationAction Continue
+                If ($SetResult.Status -eq 0)
+                    {
+                        Write-Information "Message : BIOS setting success" -InformationAction Continue
+                        return $true
+                    }
+                else
+                    {
+                        switch ( $SetResult.Status )
+                            {
+                                0 { $result = 'Success' }
+                                1 { $result = 'Failed' }
+                                2 { $result = 'Invalid Parameter' }
+                                3 { $result = 'Access Denied'  }
+                                4 { $result = 'Not Supported' }
+                                5 { $result = 'Memory Error'  }
+                                6 { $result = 'Protocol Error' }
+                                default { $result ='Unknown' }
+                            }
+                        Write-Information "Message : BIOS Password setting $result" -InformationAction Continue
+                        return $false, $SetResult.Status
+                    }
+                Write-Information "Status : False" -InformationAction Continue
+                Return $false
+            }
+    }
+
+#########################################################################################################
+####                                    Varible Section                                              ####
+#########################################################################################################
+
+$BIOSCompliant = @(
+                    [PSCustomObject]@{BIOSSettingName = "AutoOSRecoveryThreshold"; BIOSSettingValue = "OFF"; WMIClass = "EnumerationAttribute"}
+                    [PSCustomObject]@{BIOSSettingName = "SupportAssistOSRecovery"; BIOSSettingValue = "Disabled"; WMIClass = "EnumerationAttribute"}
+                    [PSCustomObject]@{BIOSSettingName = "BIOSConnect"; BIOSSettingValue = "Enabled"; WMIClass = "EnumerationAttribute"}
+                    )
+
+
+#########################################################################################################
+####                                    Program Section                                              ####
+#########################################################################################################
+
+# get BIOS setting from device
+
+try
+    {
+        [array]$BIOSCompliantStatus = @()
+
+        foreach ($Setting in $BIOSCompliant)
+            {
+                # Temp Array
+                $TempBIOSStatus = New-Object -TypeName psobject
+
+                $TempBIOSStatus = Get-CimInstance -Namespace root/dcim/sysman/biosattributes -ClassName $Setting.WMIClass -ErrorAction Stop| Where-Object {$_.AttributeName -eq $Setting.BIOSSettingName} -ErrorAction Stop| Select-Object AttributeName, CurrentValue
+
+                [array]$BIOSCompliantStatus += $TempBIOSStatus
+            }
+    }
+catch
+    {
+        $errMsg = $_.Exception.Message
+        Write-Host "Get BIOS settings failed"
+
+        # write the result to Microsoft Eventlog
+        $ScriptMessage = @{
+                            NameScript = "IntuneDetectionBIOSSettings";
+                            ScriptExecution = $errMsg
+                          }
+        $ScriptMessageJSON = $ScriptMessage | ConvertTo-Json
+        write-DellRemediationEvent -Logname Dell -Source RemediationScript -EventId '3-WarningScript' -Message $ScriptMessageJSON
+        Exit 1
+    }
+
+# check setting compliants
+[array]$SettingCompliant = @()
+
+foreach ($Status in $BIOSCompliantStatus)
+    {
+
+        $TempSettingCompliant = New-Object -TypeName psobject
+
+        ForEach ($Compliant in $BIOSCompliant)
+            {
+                If ($Compliant.BIOSSettingName -eq $Status.AttributeName)
+                    {
+
+                        If($Compliant.BIOSSettingValue -eq $Status.CurrentValue)
+                            {
+                                $TempSettingCompliant | Add-Member -MemberType NoteProperty -Name AttributeName -Value $Status.AttributeName
+                                $TempSettingCompliant | Add-Member -MemberType NoteProperty -Name Compliant -Value $true
+
+                            }
+                        else
+                            {
+                                $TempSettingCompliant | Add-Member -MemberType NoteProperty -Name AttributeName -Value $Status.AttributeName
+                                $TempSettingCompliant | Add-Member -MemberType NoteProperty -Name Compliant -Value $false
+                            }
+                    }
+            }
+            $SettingCompliant += $TempSettingCompliant
+    }
+
+
+# if one or more settings not compliant Exit 1 other otherwise Exit 0
+foreach ($Compliant in $SettingCompliant)
+    {
+        if ($Compliant.Compliant -eq $true)
+            {
+                Write-Host $Compliant.AttributeName "is compliant" $true
+            }
+        else
+            {
+                Write-Host "One or more settings are not compliant"
+
+                # write the result to Microsoft Eventlog
+                                $ScriptMessage = @{
+                                    NameScript = "DetectionBIOSSettings";
+                                    DeviceSettings = $BIOSCompliantStatus
+                                    SettingCompliant = $SettingCompliant
+                                    Compliant = $false
+                                  }
+                $ScriptMessageJSON = $ScriptMessage | ConvertTo-Json
+                write-DellRemediationEvent -Logname Dell -Source RemediationScript -EventId '3-WarningScript' -Message $ScriptMessageJSON
+                Exit 1
+            }
+
+    }
+
+Write-Host "BIOS settings are compliant"
+
+# write the result to Microsoft Eventlog
+$ScriptMessage = @{
+                        NameScript = "DetectionBIOSSettings";
+                        DeviceSettings = $BIOSCompliantStatus
+                        SettingCompliant = $SettingCompliant
+                        Compliant = $true
+                      }
+$ScriptMessageJSON = $ScriptMessage | ConvertTo-Json
+write-DellRemediationEvent -Logname Dell -Source RemediationScript -EventId '2-InformationScript' -Message $ScriptMessageJSON
+Exit 0
+
+#########################################################################################################
+####                                    END                                                          ####
+#########################################################################################################
